@@ -36,6 +36,7 @@ SSL *irc_ssl = NULL;	// IRC TLS 连接
 int irc_sock = -1;		// IRC 套接字
 int last_msg_id = 0;	// 最后处理的消息 ID
 const char *cookie_file = "cookies.txt";						// 持久化 Cookie 文件
+pthread_mutex_t curl_mutex = PTHREAD_MUTEX_INITIALIZER;			// CURL 互斥锁
 pthread_mutex_t last_msg_id_mutex = PTHREAD_MUTEX_INITIALIZER;	// 变量 last_msg_id 互斥锁
 
 // CURL 响应缓冲区
@@ -52,14 +53,6 @@ void update_last_msg_id(int new_id) {
 		printf("Updated last_msg_id to %d\n", last_msg_id);
 	}
 	pthread_mutex_unlock(&last_msg_id_mutex);
-}
-
-// 辅助函数，安全地获取 last_msg_id
-int get_last_msg_id() {
-	pthread_mutex_lock(&last_msg_id_mutex);
-	int id = last_msg_id;
-	pthread_mutex_unlock(&last_msg_id_mutex);
-	return id;
 }
 
 // CURL 写回调函数
@@ -258,6 +251,7 @@ int login_to_website(const Config *config) {
 	char url[512];
 	snprintf(url, sizeof(url), "%s?action=login", config->website_api_url);
 
+	pthread_mutex_lock(&curl_mutex);
 	curl_easy_setopt(curl, CURLOPT_URL, url);
 	curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_data);
 	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
@@ -271,6 +265,7 @@ int login_to_website(const Config *config) {
 		fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
 		free(chunk.memory);
 		curl_easy_cleanup(curl);
+		pthread_mutex_unlock(&curl_mutex);
 		return -1;
 	}
 
@@ -280,6 +275,7 @@ int login_to_website(const Config *config) {
 		fprintf(stderr, "HTTP error: %ld\n", http_code);
 		free(chunk.memory);
 		curl_easy_cleanup(curl);
+		pthread_mutex_unlock(&curl_mutex);
 		return -1;
 	}
 
@@ -289,6 +285,7 @@ int login_to_website(const Config *config) {
 		fprintf(stderr, "JSON parse error: %s\n", error.text);
 		free(chunk.memory);
 		curl_easy_cleanup(curl);
+		pthread_mutex_unlock(&curl_mutex);
 		return -1;
 	}
 
@@ -298,6 +295,7 @@ int login_to_website(const Config *config) {
 		json_decref(root);
 		free(chunk.memory);
 		curl_easy_cleanup(curl);
+		pthread_mutex_unlock(&curl_mutex);
 		return -1;
 	}
 
@@ -305,6 +303,7 @@ int login_to_website(const Config *config) {
 	json_decref(root);
 	free(chunk.memory);
 	curl_easy_cleanup(curl);
+	pthread_mutex_unlock(&curl_mutex);
 	return 0;
 }
 
@@ -322,6 +321,7 @@ int post_to_website(const Config *config, const char *msg) {
 	char url[512];
 	snprintf(url, sizeof(url), "%s?action=chat-msg-add&room=%d", config->website_api_url, config->website_room);
 
+	pthread_mutex_lock(&curl_mutex);
 	curl_easy_setopt(curl, CURLOPT_URL, url);
 	curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_data);
 	curl_easy_setopt(curl, CURLOPT_COOKIEFILE, cookie_file);
@@ -334,6 +334,7 @@ int post_to_website(const Config *config, const char *msg) {
 		fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
 		free(chunk.memory);
 		curl_easy_cleanup(curl);
+		pthread_mutex_unlock(&curl_mutex);
 		return -1;
 	}
 
@@ -343,6 +344,7 @@ int post_to_website(const Config *config, const char *msg) {
 		fprintf(stderr, "Session expired, attempting re-login\n");
 		free(chunk.memory);
 		curl_easy_cleanup(curl);
+		pthread_mutex_unlock(&curl_mutex);
 		if (login_to_website(config) == 0) {
 			// 重新登录后重试
 			//return post_to_website(config, msg);
@@ -356,6 +358,7 @@ int post_to_website(const Config *config, const char *msg) {
 		fprintf(stderr, "JSON parse error: %s\n", error.text);
 		free(chunk.memory);
 		curl_easy_cleanup(curl);
+		pthread_mutex_unlock(&curl_mutex);
 		return -1;
 	}
 
@@ -368,6 +371,7 @@ int post_to_website(const Config *config, const char *msg) {
 			json_decref(root);
 			free(chunk.memory);
 			curl_easy_cleanup(curl);
+			pthread_mutex_unlock(&curl_mutex);
 			if (login_to_website(config) == 0) {
 				// 重新登录后重试
 				//return post_to_website(config, msg);
@@ -377,6 +381,7 @@ int post_to_website(const Config *config, const char *msg) {
 		json_decref(root);
 		free(chunk.memory);
 		curl_easy_cleanup(curl);
+		pthread_mutex_unlock(&curl_mutex);
 		return -1;
 	}
 
@@ -398,6 +403,7 @@ int post_to_website(const Config *config, const char *msg) {
 	json_decref(root);
 	free(chunk.memory);
 	curl_easy_cleanup(curl);
+	pthread_mutex_unlock(&curl_mutex);
 	return 0;
 }
 
@@ -482,6 +488,7 @@ void *poll_website(void *arg) {
 	char url[512];
 	snprintf(url, sizeof(url), "%s?action=chat-msg-list&room=%d&page=1", config->website_api_url, config->website_room);
 
+	pthread_mutex_lock(&curl_mutex);
 	curl_easy_setopt(curl, CURLOPT_URL, url);
 	curl_easy_setopt(curl, CURLOPT_COOKIEFILE, cookie_file);
 	curl_easy_setopt(curl, CURLOPT_COOKIEJAR, cookie_file);
@@ -493,6 +500,7 @@ void *poll_website(void *arg) {
 		fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
 		free(chunk.memory);
 		curl_easy_cleanup(curl);
+		pthread_mutex_unlock(&curl_mutex);
 		sleep(config->poll_interval);
 		return NULL;
 	}
@@ -503,6 +511,7 @@ void *poll_website(void *arg) {
 		fprintf(stderr, "Session expired, attempting re-login\n");
 		free(chunk.memory);
 		curl_easy_cleanup(curl);
+		pthread_mutex_unlock(&curl_mutex);
 		if (login_to_website(config) == 0) {
 			return NULL; // 在下一个线程启动时重试
 		}
@@ -516,6 +525,7 @@ void *poll_website(void *arg) {
 		fprintf(stderr, "JSON parse error: %s\n", chunk.memory);
 		free(chunk.memory);
 		curl_easy_cleanup(curl);
+		pthread_mutex_unlock(&curl_mutex);
 		sleep(config->poll_interval);
 		return NULL;
 	}
@@ -534,6 +544,7 @@ void *poll_website(void *arg) {
 	json_decref(root);
 	free(chunk.memory);
 	curl_easy_cleanup(curl);
+	pthread_mutex_unlock(&curl_mutex);
 
 	// 使用 chat-msg-get API获取新消息
 	while (1) {
@@ -546,9 +557,10 @@ void *poll_website(void *arg) {
 		chunk.memory = malloc(1);
 		chunk.size = 0;
 
-		int current_last_msg_id = get_last_msg_id();
+		int current_last_msg_id = last_msg_id;
 		snprintf(url, sizeof(url), "%s?action=chat-msg-get&room=%d&id=%d", config->website_api_url, config->website_room, current_last_msg_id);
 
+		pthread_mutex_lock(&curl_mutex);
 		curl_easy_setopt(curl, CURLOPT_URL, url);
 		curl_easy_setopt(curl, CURLOPT_COOKIEFILE, cookie_file);
 		curl_easy_setopt(curl, CURLOPT_COOKIEJAR, cookie_file);
@@ -560,6 +572,7 @@ void *poll_website(void *arg) {
 			fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
 			free(chunk.memory);
 			curl_easy_cleanup(curl);
+			pthread_mutex_unlock(&curl_mutex);
 			sleep(config->poll_interval);
 			continue;
 		}
@@ -569,6 +582,7 @@ void *poll_website(void *arg) {
 			fprintf(stderr, "Session expired, attempting re-login\n");
 			free(chunk.memory);
 			curl_easy_cleanup(curl);
+			pthread_mutex_unlock(&curl_mutex);
 			if (login_to_website(config) == 0) {
 				continue; // 重新登录后重试
 			}
@@ -581,6 +595,7 @@ void *poll_website(void *arg) {
 			fprintf(stderr, "JSON parse error: %s\n", chunk.memory);
 			free(chunk.memory);
 			curl_easy_cleanup(curl);
+			pthread_mutex_unlock(&curl_mutex);
 			sleep(config->poll_interval);
 			continue;
 		}
@@ -614,6 +629,7 @@ void *poll_website(void *arg) {
 				json_decref(root);
 				free(chunk.memory);
 				curl_easy_cleanup(curl);
+				pthread_mutex_unlock(&curl_mutex);
 				if (login_to_website(config) == 0) {
 					continue; // 重新登录后重试
 				}
@@ -623,6 +639,7 @@ void *poll_website(void *arg) {
 		json_decref(root);
 		free(chunk.memory);
 		curl_easy_cleanup(curl);
+		pthread_mutex_unlock(&curl_mutex);
 		sleep(config->poll_interval);
 	}
 	return NULL;
@@ -805,5 +822,6 @@ int main() {
 	close(irc_sock);
 	free_config(&config);
 	curl_global_cleanup();
+	pthread_mutex_destroy(&curl_mutex);
 	return 0;
 }
