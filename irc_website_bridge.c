@@ -35,6 +35,7 @@ typedef struct {
 SSL *irc_ssl = NULL;	// IRC TLS 连接
 int irc_sock = -1;		// IRC 套接字
 int last_msg_id = 0;	// 最后处理的消息 ID
+int dcms_user_id;		// 保存自己的用户ID
 const char *cookie_file = "cookies.txt";						// 持久化 Cookie 文件
 pthread_mutex_t curl_mutex = PTHREAD_MUTEX_INITIALIZER;			// CURL 互斥锁
 pthread_mutex_t last_msg_id_mutex = PTHREAD_MUTEX_INITIALIZER;	// 变量 last_msg_id 互斥锁
@@ -292,6 +293,21 @@ int login_to_website(const Config *config) {
 	const char *status = json_string_value(json_object_get(root, "status"));
 	if (strcmp(status, "success") != 0) {
 		fprintf(stderr, "Website login failed: %s\n", json_string_value(json_object_get(root, "message")));
+		json_decref(root);
+		free(chunk.memory);
+		curl_easy_cleanup(curl);
+		pthread_mutex_unlock(&curl_mutex);
+		return -1;
+	}
+
+	// 提取 user_id
+	json_t *data = json_object_get(root, "data");
+	json_t *user_id_json = json_object_get(data, "user_id");
+	if (json_is_integer(user_id_json)) {
+		dcms_user_id = json_integer_value(user_id_json); // 赋值给全局变量
+		printf("Stored user_id: %d\n", dcms_user_id);
+	} else {
+		fprintf(stderr, "Failed to parse user_id from login response\n");
 		json_decref(root);
 		free(chunk.memory);
 		curl_easy_cleanup(curl);
@@ -607,8 +623,13 @@ void *poll_website(void *arg) {
 			json_t *value;
 			json_array_foreach(data, index, value) {
 				int id = json_integer_value(json_object_get(value, "id"));
+				int id_user = json_integer_value(json_object_get(value, "id_user"));
+				// 忽略自己的消息
+				if (id_user == dcms_user_id) {
+					update_last_msg_id(id);
+					continue;
+				}
 				if (id > current_last_msg_id) {
-					int id_user = json_integer_value(json_object_get(value, "id_user"));
 					const char *msg = json_string_value(json_object_get(value, "msg"));
 					char *nick = get_user_nick(config, id_user);
 					char irc_msg[512];
