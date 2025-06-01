@@ -729,13 +729,22 @@ void *handle_irc(void *arg) {
 			// 检查是否为目标频道
 			if (strstr(buffer, config->irc_channel)) {
 				// 构造消息格式，检查是否为可信用户
-				char formatted_msg[512];
+				char *formatted_msg = NULL;
 				if (is_trusted_user(config, nick)) {
-					snprintf(formatted_msg, sizeof(formatted_msg), "%s", message);
+					// 只发消息内容
+					formatted_msg = strdup(message);
 				} else {
-					snprintf(formatted_msg, sizeof(formatted_msg), "[IRC] %s: %s", nick, message);
+					// 先计算所需长度
+					int needed = snprintf(NULL, 0, "[IRC] %s: %s", nick, message) + 1;
+					formatted_msg = malloc(needed);
+					if (formatted_msg) {
+						snprintf(formatted_msg, needed, "[IRC] %s: %s", nick, message);
+					}
 				}
-				post_to_website(config, formatted_msg);
+				if (formatted_msg) {
+					post_to_website(config, formatted_msg);
+					free(formatted_msg);
+				}
 			}
 		}
 	}
