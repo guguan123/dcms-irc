@@ -1,8 +1,8 @@
 CC=gcc
 CFLAGS=-g -Wall
 LDFLAGS=-lssl -lcrypto -lcurl -ljansson -pthread -linih
-EXECUTABLE=irc_website_bridge
-SRC=irc_website_bridge.c
+EXECUTABLE=irc_dcms_bridge
+SRC=irc_dcms_bridge.c
 
 .PHONY: all clean
 
