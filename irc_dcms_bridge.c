@@ -1,3 +1,49 @@
+// global curl request fuckion
+// method: "GET" or "POST"
+// post_data : POST data，GET OK NULL
+// 0=good，-1=fuck，chunk&http_code&json_root all return
+int perform_curl_request(const char *url, const char *method, const char *post_data, struct MemoryStruct *chunk, long *http_code, json_t **json_root) {
+	CURL *curl = curl_easy_init();
+	if (!curl) return -1;
+
+	chunk->memory = malloc(1);
+	chunk->size = 0;
+
+	curl_easy_setopt(curl, CURLOPT_URL, url);
+	curl_easy_setopt(curl, CURLOPT_COOKIEFILE, cookie_file);
+	curl_easy_setopt(curl, CURLOPT_COOKIEJAR, cookie_file);
+	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
+	curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)chunk);
+	if (method && strcmp(method, "POST") == 0 && post_data) {
+		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_data);
+	}
+
+	pthread_mutex_lock(&curl_mutex);
+	CURLcode res = curl_easy_perform(curl);
+	if (res != CURLE_OK) {
+		fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+		free(chunk->memory);
+		curl_easy_cleanup(curl);
+		pthread_mutex_unlock(&curl_mutex);
+		return -1;
+	}
+
+	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, http_code);
+
+	json_error_t error;
+	*json_root = json_loads(chunk->memory, 0, &error);
+	if (!*json_root) {
+		fprintf(stderr, "JSON parse error: %s\n", error.text);
+		free(chunk->memory);
+		curl_easy_cleanup(curl);
+		pthread_mutex_unlock(&curl_mutex);
+		return -1;
+	}
+
+	curl_easy_cleanup(curl);
+	pthread_mutex_unlock(&curl_mutex);
+	return 0;
+}
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <sys/socket.h>
@@ -232,7 +278,7 @@ void send_irc_command(const Config *config, const char *cmd) {
 		}
 	} else {
 		if (send(irc_sock, buffer, strlen(buffer), 0) < 0) {
-			perror("Send failed");
+			perror("Send fucked");
 		}
 	}
 	printf("Sent: %s", buffer);
@@ -240,63 +286,29 @@ void send_irc_command(const Config *config, const char *cmd) {
 
 // 登录到网站 API
 int login_to_website(const Config *config) {
-	CURL *curl = curl_easy_init();
-	if (!curl) return -1;
-
-	struct MemoryStruct chunk;
-	chunk.memory = malloc(1);
-	chunk.size = 0;
-
 	char post_data[256];
 	snprintf(post_data, sizeof(post_data), "nick=%s&password=%s&aut_save=0", config->website_user, config->website_pass);
 	char url[512];
 	snprintf(url, sizeof(url), "%s?action=login", config->website_api_url);
 
-	pthread_mutex_lock(&curl_mutex);
-	curl_easy_setopt(curl, CURLOPT_URL, url);
-	curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_data);
-	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
-	curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunk);
-	curl_easy_setopt(curl, CURLOPT_COOKIEFILE, cookie_file);
-	curl_easy_setopt(curl, CURLOPT_COOKIEJAR, cookie_file);
-	curl_easy_setopt(curl, CURLOPT_COOKIESESSION, 1L); // 启动新的 Cookie 会话
-
-	CURLcode res = curl_easy_perform(curl);
-	if (res != CURLE_OK) {
-		fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
-		free(chunk.memory);
-		curl_easy_cleanup(curl);
-		pthread_mutex_unlock(&curl_mutex);
-		return -1;
-	}
-
+	struct MemoryStruct chunk;
 	long http_code;
-	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-	if (http_code != 200) {
-		fprintf(stderr, "HTTP error: %ld\n", http_code);
-		free(chunk.memory);
-		curl_easy_cleanup(curl);
-		pthread_mutex_unlock(&curl_mutex);
-		return -1;
-	}
-
-	json_error_t error;
-	json_t *root = json_loads(chunk.memory, 0, &error);
-	if (!root) {
-		fprintf(stderr, "JSON parse error: %s\n", error.text);
-		free(chunk.memory);
-		curl_easy_cleanup(curl);
-		pthread_mutex_unlock(&curl_mutex);
+	json_t *root = NULL;
+	int ret = perform_curl_request(url, "POST", post_data, &chunk, &http_code, &root);
+	if (ret != 0 || http_code != 200) {
+		if (ret == 0) {
+			json_decref(root);
+			free(chunk.memory);
+		}
+		fprintf(stderr, "Fuck! HTTP or CURL error: %ld\n", http_code);
 		return -1;
 	}
 
 	const char *status = json_string_value(json_object_get(root, "status"));
 	if (strcmp(status, "success") != 0) {
-		fprintf(stderr, "Website login failed: %s\n", json_string_value(json_object_get(root, "message")));
+		fprintf(stderr, "Fuck! Website login failed: %s\n", json_string_value(json_object_get(root, "message")));
 		json_decref(root);
 		free(chunk.memory);
-		curl_easy_cleanup(curl);
-		pthread_mutex_unlock(&curl_mutex);
 		return -1;
 	}
 
@@ -307,19 +319,15 @@ int login_to_website(const Config *config) {
 		dcms_user_id = json_integer_value(user_id_json); // 赋值给全局变量
 		printf("Stored user_id: %d\n", dcms_user_id);
 	} else {
-		fprintf(stderr, "Failed to parse user_id from login response\n");
+		fprintf(stderr, "Fuck! Failed to parse user_id from login response\n");
 		json_decref(root);
 		free(chunk.memory);
-		curl_easy_cleanup(curl);
-		pthread_mutex_unlock(&curl_mutex);
 		return -1;
 	}
 
 	printf("Website login successful\n");
 	json_decref(root);
 	free(chunk.memory);
-	curl_easy_cleanup(curl);
-	pthread_mutex_unlock(&curl_mutex);
 	return 0;
 }
 
@@ -764,26 +772,31 @@ void *handle_irc(void *arg) {
 			strncpy(message, msg_start, msg_len);
 			message[msg_len] = '\0';
 
-			// 检查是否为目标频道
-			if (strstr(buffer, config->irc_channel)) {
-				// 构造消息格式，检查是否为可信用户
-				char *formatted_msg = NULL;
-				if (is_trusted_user(config, nick)) {
-					// 只发消息内容
-					formatted_msg = strdup(message);
-				} else {
-					// 先计算所需长度
-					int needed = snprintf(NULL, 0, "[IRC] %s: %s", nick, message) + 1;
-					formatted_msg = malloc(needed);
-					if (formatted_msg) {
-						snprintf(formatted_msg, needed, "[IRC] %s: %s", nick, message);
-					}
-				}
-				if (formatted_msg) {
-					post_to_website(config, formatted_msg);
-					free(formatted_msg);
-				}
-			}
+					   // 检查是否为目标频道
+					   if (strstr(buffer, config->irc_channel)) {
+							   // Fucking
+							   if (message[0] == ';') {
+									   printf("Message starts with semicolon, not forwarding.\n");
+									   continue;
+							   }
+							   // 构造消息格式，检查是否为可信用户
+							   char *formatted_msg = NULL;
+							   if (is_trusted_user(config, nick)) {
+									   // 只发消息内容
+									   formatted_msg = strdup(message);
+							   } else {
+									   // 先计算所需长度
+									   int needed = snprintf(NULL, 0, "[IRC] %s: %s", nick, message) + 1;
+									   formatted_msg = malloc(needed);
+									   if (formatted_msg) {
+											   snprintf(formatted_msg, needed, "[IRC] %s: %s", nick, message);
+									   }
+							   }
+							   if (formatted_msg) {
+									   post_to_website(config, formatted_msg);
+									   free(formatted_msg);
+							   }
+					   }
 		}
 	}
 	return NULL;
@@ -793,7 +806,7 @@ int main() {
 	// 加载配置
 	Config config = {0};
 	if (load_config("config.ini", &config) != 0) {
-		fprintf(stderr, "Failed to load configuration\n");
+		fprintf(stderr, "Fuck! Failed to load configuration\n");
 		return 1;
 	}
 
@@ -803,7 +816,7 @@ int main() {
 	// 登录网站
 	printf("Login to DCMS...\n");
 	if (login_to_website(&config) != 0) {
-		fprintf(stderr, "Failed to login to DCMS\n");
+		fprintf(stderr, "FckuFailed to login to DCMS\n");
 		free_config(&config);
 		curl_global_cleanup();
 		return 1;
