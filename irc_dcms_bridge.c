@@ -24,6 +24,7 @@ typedef struct {
 	char *website_api_url;  // 网站 API 地址
 	char *website_user;     // 网站用户名
 	char *website_pass;     // 网站密码
+	char *cookie_file;      // Cookie 文件路径
 	int website_room;       // 网站聊天室 ID
 	int poll_interval;      // 轮询间隔（秒）
 	int use_tls;            // 是否使用 TLS (0 = 不使用, 1 = 使用)
@@ -36,7 +37,6 @@ SSL *irc_ssl = NULL;	// IRC TLS 连接
 int irc_sock = -1;		// IRC 套接字
 int last_msg_id = 0;	// 最后处理的消息 ID
 int dcms_user_id;		// 保存自己的用户ID
-const char *cookie_file = "cookies.txt";						// 持久化 Cookie 文件
 pthread_mutex_t curl_mutex = PTHREAD_MUTEX_INITIALIZER;			// CURL 互斥锁
 pthread_mutex_t last_msg_id_mutex = PTHREAD_MUTEX_INITIALIZER;	// 变量 last_msg_id 互斥锁
 
@@ -106,6 +106,7 @@ static int config_ini_handler(void *user, const char *section, const char *name,
 		else if (strcmp(name, "pass") == 0) config->website_pass = strdup(value);
 		else if (strcmp(name, "room") == 0) config->website_room = atoi(value);
 		else if (strcmp(name, "poll_interval") == 0) config->poll_interval = atoi(value);
+		else if (strcmp(name, "cookie_file") == 0) config->cookie_file = strdup(value);
 	}
 	return 1;
 }
@@ -129,6 +130,7 @@ void free_config(Config *config) {
 	free(config->website_api_url);
 	free(config->website_user);
 	free(config->website_pass);
+	free(config->cookie_file);
 	for (int i = 0; i < config->trusted_users_count; i++) {
 		free(config->trusted_users[i]);
 	}
@@ -222,10 +224,12 @@ int connect_irc_server(const Config *config) {
 	return 0;
 }
 
+pthread_mutex_t irc_send_mutex = PTHREAD_MUTEX_INITIALIZER; // IRC的互斥锁
 // 发送 IRC 命令
 void send_irc_command(const Config *config, const char *cmd) {
 	char buffer[512];
 	snprintf(buffer, sizeof(buffer), "%s\r\n", cmd);
+	pthread_mutex_lock(&irc_send_mutex); // 加锁
 	if (config->use_tls) {
 		if (SSL_write(irc_ssl, buffer, strlen(buffer)) <= 0) {
 			ERR_print_errors_fp(stderr);
@@ -235,6 +239,7 @@ void send_irc_command(const Config *config, const char *cmd) {
 			perror("Send failed");
 		}
 	}
+	pthread_mutex_unlock(&irc_send_mutex); // 解锁
 	printf("Sent: %s", buffer);
 }
 
@@ -257,8 +262,8 @@ int login_to_website(const Config *config) {
 	curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_data);
 	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
 	curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunk);
-	curl_easy_setopt(curl, CURLOPT_COOKIEFILE, cookie_file);
-	curl_easy_setopt(curl, CURLOPT_COOKIEJAR, cookie_file);
+	curl_easy_setopt(curl, CURLOPT_COOKIEFILE, config->cookie_file);
+	curl_easy_setopt(curl, CURLOPT_COOKIEJAR, config->cookie_file);
 	curl_easy_setopt(curl, CURLOPT_COOKIESESSION, 1L); // 启动新的 Cookie 会话
 
 	CURLcode res = curl_easy_perform(curl);
@@ -340,8 +345,8 @@ int post_to_website(const Config *config, const char *msg) {
 	pthread_mutex_lock(&curl_mutex);
 	curl_easy_setopt(curl, CURLOPT_URL, url);
 	curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_data);
-	curl_easy_setopt(curl, CURLOPT_COOKIEFILE, cookie_file);
-	curl_easy_setopt(curl, CURLOPT_COOKIEJAR, cookie_file);
+	curl_easy_setopt(curl, CURLOPT_COOKIEFILE, config->cookie_file);
+	curl_easy_setopt(curl, CURLOPT_COOKIEJAR, config->cookie_file);
 	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
 	curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunk);
 
@@ -436,8 +441,8 @@ char *get_user_nick(const Config *config, int user_id) {
 	snprintf(url, sizeof(url), "%s?action=user-info&id=%d", config->website_api_url, user_id);
 
 	curl_easy_setopt(curl, CURLOPT_URL, url);
-	curl_easy_setopt(curl, CURLOPT_COOKIEFILE, cookie_file);
-	curl_easy_setopt(curl, CURLOPT_COOKIEJAR, cookie_file);
+	curl_easy_setopt(curl, CURLOPT_COOKIEFILE, config->cookie_file);
+	curl_easy_setopt(curl, CURLOPT_COOKIEJAR, config->cookie_file);
 	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
 	curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunk);
 
@@ -506,8 +511,8 @@ void *poll_website(void *arg) {
 
 	pthread_mutex_lock(&curl_mutex);
 	curl_easy_setopt(curl, CURLOPT_URL, url);
-	curl_easy_setopt(curl, CURLOPT_COOKIEFILE, cookie_file);
-	curl_easy_setopt(curl, CURLOPT_COOKIEJAR, cookie_file);
+	curl_easy_setopt(curl, CURLOPT_COOKIEFILE, config->cookie_file);
+	curl_easy_setopt(curl, CURLOPT_COOKIEJAR, config->cookie_file);
 	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
 	curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunk);
 
@@ -578,8 +583,8 @@ void *poll_website(void *arg) {
 
 		pthread_mutex_lock(&curl_mutex);
 		curl_easy_setopt(curl, CURLOPT_URL, url);
-		curl_easy_setopt(curl, CURLOPT_COOKIEFILE, cookie_file);
-		curl_easy_setopt(curl, CURLOPT_COOKIEJAR, cookie_file);
+		curl_easy_setopt(curl, CURLOPT_COOKIEFILE, config->cookie_file);
+		curl_easy_setopt(curl, CURLOPT_COOKIEJAR, config->cookie_file);
 		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
 		curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunk);
 
