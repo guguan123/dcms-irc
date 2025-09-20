@@ -37,6 +37,7 @@ SSL *irc_ssl = NULL;	// IRC TLS 连接
 int irc_sock = -1;		// IRC 套接字
 int last_msg_id = 0;	// 最后处理的消息 ID
 int dcms_user_id;		// 保存自己的用户ID
+const char *ignore_prefixes[] = {"//", ";", NULL};				// 忽略的前缀
 pthread_mutex_t curl_mutex = PTHREAD_MUTEX_INITIALIZER;			// CURL 互斥锁
 pthread_mutex_t last_msg_id_mutex = PTHREAD_MUTEX_INITIALIZER;	// 变量 last_msg_id 互斥锁
 
@@ -328,6 +329,17 @@ int login_to_website(const Config *config) {
 	return 0;
 }
 
+// 消息前缀检查
+int should_ignore_message(const char *msg) {
+	if (!msg) return 0;
+	for (int i = 0; ignore_prefixes[i] != NULL; i++) {
+		if (strncmp(msg, ignore_prefixes[i], strlen(ignore_prefixes[i])) == 0) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
 // 向网站发送消息
 int post_to_website(const Config *config, const char *msg) {
 	CURL *curl = curl_easy_init();
@@ -429,7 +441,7 @@ int post_to_website(const Config *config, const char *msg) {
 }
 
 // 获取DCMS用户昵称
-char *get_user_nick(const Config *config, int user_id) {
+char *get_dcms_user_nick(const Config *config, int user_id) {
 	CURL *curl = curl_easy_init();
 	if (!curl) return NULL;
 
@@ -636,7 +648,12 @@ void *poll_website(void *arg) {
 				}
 				if (id > current_last_msg_id) {
 					const char *msg = json_string_value(json_object_get(value, "msg"));
-					char *nick = get_user_nick(config, id_user);
+					if (should_ignore_message(msg)) {
+						printf("Ignoring website message (filtered): %s\n", msg);
+						update_last_msg_id(id);
+						continue;
+					}
+					char *nick = get_dcms_user_nick(config, id_user);
 					char irc_msg[512];
 					if (nick) {
 						snprintf(irc_msg, sizeof(irc_msg), "PRIVMSG %s :[DCMS] %s: %s", config->irc_channel, nick, msg);
@@ -771,6 +788,11 @@ void *handle_irc(void *arg) {
 
 			// 检查是否为目标频道
 			if (strstr(buffer, config->irc_channel)) {
+				// 跳过以指定字符串开头的消息
+				if (should_ignore_message(message)) {
+					printf("Ignoring IRC message (filtered): %s\n", message);
+					continue;
+				}
 				// 构造消息格式，检查是否为可信用户
 				char *formatted_msg = NULL;
 				if (is_bridge_user(config, nick)) {
