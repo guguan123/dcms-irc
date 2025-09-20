@@ -28,8 +28,8 @@ typedef struct {
 	int website_room;       // 网站聊天室 ID
 	int poll_interval;      // 轮询间隔（秒）
 	int use_tls;            // 是否使用 TLS (0 = 不使用, 1 = 使用)
-	char **trusted_users;   // 可信 IRC 用户列表
-	int trusted_users_count;// 可信用户数量
+	char **bridge_users;    // 桥接 IRC 用户列表
+	int bridge_users_count; // 桥接用户数量
 } Config;
 
 // 全局变量
@@ -83,19 +83,19 @@ static int config_ini_handler(void *user, const char *section, const char *name,
 		else if (strcmp(name, "realname") == 0) config->irc_realname = strdup(value);
 		else if (strcmp(name, "channel") == 0) config->irc_channel = strdup(value);
 		else if (strcmp(name, "use_tls") == 0) config->use_tls = atoi(value);
-		else if (strcmp(name, "trusted_users") == 0) {
+		else if (strcmp(name, "bridge_users") == 0) {
 			// 用逗号拆分受信任的用户
 			char *value_copy = strdup(value);
 			char *token = strtok(value_copy, ",");
-			config->trusted_users_count = 0;
+			config->bridge_users_count = 0;
 			while (token) {
-				config->trusted_users_count++;
+				config->bridge_users_count++;
 				token = strtok(NULL, ",");
 			}
-			config->trusted_users = malloc(config->trusted_users_count * sizeof(char *));
+			config->bridge_users = malloc(config->bridge_users_count * sizeof(char *));
 			token = strtok(strdup(value), ",");
-			for (int i = 0; token && i < config->trusted_users_count; i++) {
-				config->trusted_users[i] = strdup(token);
+			for (int i = 0; token && i < config->bridge_users_count; i++) {
+				config->bridge_users[i] = strdup(token);
 				token = strtok(NULL, ",");
 			}
 			free(value_copy);
@@ -131,10 +131,10 @@ void free_config(Config *config) {
 	free(config->website_user);
 	free(config->website_pass);
 	free(config->cookie_file);
-	for (int i = 0; i < config->trusted_users_count; i++) {
-		free(config->trusted_users[i]);
+	for (int i = 0; i < config->bridge_users_count; i++) {
+		free(config->bridge_users[i]);
 	}
-	free(config->trusted_users);
+	free(config->bridge_users);
 }
 
 // 初始化 OpenSSL 上下文
@@ -673,8 +673,8 @@ void *poll_website(void *arg) {
 
 // 检查是否为可信用户
 int is_trusted_user(const Config *config, const char *nick) {
-	for (int i = 0; i < config->trusted_users_count; i++) {
-		if (strcmp(config->trusted_users[i], nick) == 0) {
+	for (int i = 0; i < config->bridge_users_count; i++) {
+		if (strcmp(config->bridge_users[i], nick) == 0) {
 			return 1;
 		}
 	}
