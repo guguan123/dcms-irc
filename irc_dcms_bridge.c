@@ -672,7 +672,7 @@ void *poll_website(void *arg) {
 }
 
 // 检查是否为可信用户
-int is_trusted_user(const Config *config, const char *nick) {
+int is_bridge_user(const Config *config, const char *nick) {
 	for (int i = 0; i < config->bridge_users_count; i++) {
 		if (strcmp(config->bridge_users[i], nick) == 0) {
 			return 1;
@@ -773,7 +773,7 @@ void *handle_irc(void *arg) {
 			if (strstr(buffer, config->irc_channel)) {
 				// 构造消息格式，检查是否为可信用户
 				char *formatted_msg = NULL;
-				if (is_trusted_user(config, nick)) {
+				if (is_bridge_user(config, nick)) {
 					// 只发消息内容
 					formatted_msg = strdup(message);
 				} else {
@@ -823,13 +823,12 @@ int main() {
 		return 1;
 	}
 
-	// IRC 登录，只发送 NICK 和 USER
+	// IRC 登录，发送 NICK 和 USER
 	char nick_cmd[512], user_cmd[512];
 	snprintf(nick_cmd, sizeof(nick_cmd), "NICK %s", config.irc_nick);
 	snprintf(user_cmd, sizeof(user_cmd), "USER %s 0 * :%s", config.irc_user, config.irc_realname);
 	send_irc_command(&config, nick_cmd);
 	send_irc_command(&config, user_cmd);
-	// 不再这里发送 JOIN
 
 	// 启动线程
 	pthread_t irc_thread, website_thread;
